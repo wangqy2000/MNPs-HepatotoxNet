@@ -3,6 +3,7 @@ This is my research project, which consists of two parts: downloading a homologo
 
 ## Code Structure
 `Download_Homologous_Gene_Table.R`: Code for downloading the homologous gene tables of experimental animals to humans.
+
 `WGCNA.R`: Code for construction of gene network using WGCNA.
  
 ## Installation Guide
