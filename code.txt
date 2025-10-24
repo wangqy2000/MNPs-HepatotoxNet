@@ -1,0 +1,191 @@
+# 1. download Homologous Gene Table (Mouse to Human Gene Mapping Example) ----------------------------------------------------
+
+# Install and load biomaRt package
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("biomaRt")
+
+# Load required library
+library(biomaRt)
+
+# Check available BioMart databases
+listMarts()
+
+# Connect to Ensembl databases
+human_mart <- useEnsembl("ensembl", dataset = "hsapiens_gene_ensembl", version = "105")
+mouse_mart <- useEnsembl("ensembl", dataset = "mmusculus_gene_ensembl", version = "105")
+
+# Explore available datasets
+listDatasets(human_mart)
+listDatasets(mouse_mart)
+
+# Check available attributes for gene symbol mapping
+mouse_attributes <- listAttributes(mouse_mart)
+mouse_attributes[grep("symbol", mouse_attributes$name), ]
+
+# Set working directory and load gene data
+setwd("./data")
+gene_data <- read.csv("gene_symbols.csv", fileEncoding = "UTF-8")
+
+# Perform cross-species gene mapping
+homologous_genes <- getLDS(
+    attributes = c("mgi_symbol"), 
+    values = gene_data$symbol, 
+    mart = mouse_mart,
+    attributesL = c("hgnc_symbol"), 
+    martL = human_mart
+)
+
+# Save homologous gene table
+write.csv(homologous_genes, "./output/homologous_gene_mapping.csv", row.names = FALSE)
+
+
+
+
+# 2. WGCNA ----------------------------------------------------
+
+# Load required libraries
+library(WGCNA)
+library(stringr)
+
+# Configure analysis environment
+options(stringsAsFactors = FALSE)
+enableWGCNAThreads()  # Enable multi-threading for faster computation
+
+# Data Import and Preprocessing ----------------------------------------------
+# Set working directory and load expression data
+setwd("./data/wgcna_analysis")
+expression_data <- read.csv("hepatotoxicity_expression.csv", header = TRUE, row.names = 1)
+
+# Transform data to samples in rows, genes in columns format
+datExpr <- t(expression_data)
+dim(datExpr)
+
+# Quality Control: Detect and remove genes/samples with excessive missing values
+gsg <- goodSamplesGenes(datExpr, verbose = 3)
+if (!gsg$allOK) {
+  # Remove problematic genes and samples
+  if (sum(!gsg$goodGenes) > 0) 
+    printFlush(paste("Removing genes:", 
+                     paste(names(datExpr)[!gsg$goodGenes], collapse = ",")))
+  if (sum(!gsg$goodSamples) > 0) 
+    printFlush(paste("Removing samples:", 
+                     paste(rownames(datExpr)[!gsg$goodSamples], collapse = ",")))
+  datExpr <- datExpr[gsg$goodSamples, gsg$goodGenes]
+}
+
+# Display dataset dimensions after quality control
+nGenes <- ncol(datExpr)
+nSamples <- nrow(datExpr)
+dim(datExpr)
+head(datExpr)[,1:8]
+
+# Soft Threshold Selection ---------------------------------------------------
+# Identify sample outliers using hierarchical clustering
+sampleTree <- hclust(dist(datExpr), method = "average")
+plot(sampleTree, main = "Sample Clustering to Detect Outliers", 
+     sub = "", xlab = "")
+
+# Determine optimal soft-thresholding power for network construction
+powers <- c(c(1:10), seq(from = 12, to = 30, by = 2))
+sft <- pickSoftThreshold(datExpr, powerVector = powers, 
+                        networkType = "unsigned", verbose = 5)
+
+# Plot scale independence and mean connectivity for power selection
+par(mfrow = c(1, 2))
+cex1 <- 0.9
+
+# Scale independence plot
+plot(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)", ylab = "Scale Free Topology Model Fit, signed R²",
+     type = "n", main = "Scale Independence")
+text(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "red")
+abline(h = 0.9, col = "red")  # Recommended cutoff for scale-free topology
+
+# Mean connectivity plot
+plot(sft$fitIndices[, 1], sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)", ylab = "Mean Connectivity",
+     type = "n", main = "Mean Connectivity")
+text(sft$fitIndices[, 1], sft$fitIndices[, 5], labels = powers, 
+     cex = cex1, col = "red")
+
+power <- sft$powerEstimate
+print(paste("Selected soft threshold power:", power))
+
+# Network Construction -------------------------------------------------------
+# One-step network construction and module detection
+net <- blockwiseModules(datExpr, power = power, 
+                       TOMType = "unsigned", minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.25,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE, 
+                       saveTOMFileBase = "hepatotoxicity_TOM",
+                       verbose = 3)
+
+# Display module size distribution
+module_sizes <- table(net$colors)
+print("Module size distribution:")
+print(module_sizes)
+
+# Hierarchical Clustering and Module Visualization ---------------------------
+# Convert numeric module labels to colors for visualization
+moduleLabels <- net$colors
+moduleColors <- labels2colors(moduleLabels)
+
+# Plot dendrogram with module colors
+plotDendroAndColors(net$dendrograms[[1]], moduleColors[net$blockGenes[[1]]],
+                    "Module Colors", dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+
+# Save dendrogram plot
+pdf("module_dendrogram.pdf")
+
+# Module Eigengene Analysis --------------------------------------------------
+# Calculate and organize module eigengenes
+MEs <- net$MEs
+MEs_col <- MEs
+colnames(MEs_col) <- paste0("ME", labels2colors(
+  as.numeric(str_replace_all(colnames(MEs), "ME", ""))))
+MEs_col <- orderMEs(MEs_col)
+
+# Plot eigengene adjacency heatmap
+plotEigengeneNetworks(MEs_col, "Eigengene Adjacency Heatmap", 
+                      marDendro = c(3, 3, 2, 4),
+                      marHeatmap = c(3, 4, 2, 2), plotDendrograms = TRUE, 
+                      xLabelsAngle = 90)
+
+# Plot eigengene dendrogram separately
+sizeGrWindow(6, 6)
+par(cex = 1.0)
+plotEigengeneNetworks(MEs_col, "Eigengene Dendrogram", 
+                      marDendro = c(0, 4, 2, 0), plotHeatmaps = FALSE)
+
+# Plot heatmap matrix separately
+par(cex = 1.0)
+plotEigengeneNetworks(MEs_col, "Eigengene Adjacency Heatmap", 
+                      marHeatmap = c(3, 4, 2, 2), plotDendrograms = FALSE, 
+                      xLabelsAngle = 90)
+
+# Save eigengene plots
+pdf("eigengene_network_plots.pdf")
+
+# Topological Overlap Matrix (TOM) Visualization -----------------------------
+# Load or calculate topological overlap matrix
+load(net$TOMFiles[1], verbose = TRUE)
+TOM <- TOMsimilarityFromExpr(datExpr, power = sft$powerEstimate)
+
+# Save TOM for downstream analysis
+write.csv(TOM, file = "hepatotoxicity_TOM_matrix.csv", row.names = FALSE, quote = FALSE)
+
+# Cytoscape Network Export ---------------------------------------------------
+# Prepare data for network visualization in Cytoscape
+probes <- colnames(datExpr)
+dimnames(TOM) <- list(probes, probes)
+
+# Export network to Cytoscape format
+cytoscape_export <- exportNetworkToCytoscape(TOM,
+                               edgeFile = "hepatotoxicity_network_edges.txt",
+                               nodeFile = "hepatotoxicity_network_nodes.txt",
+                               weighted = TRUE, threshold = 0.05,
+                               nodeNames = probes, nodeAttr = moduleColors)
