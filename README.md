@@ -16,7 +16,7 @@ Before running these scripts, please make sure to install the following R packag
 - WGCNA
 - stringr
 
-You can install these packages using `install.packages()` and `BiocManager::install()` commands in R.
+You can install these packages using `install.packages()`  and  `BiocManager::install()`  commands in R.
 
 ## Usage
 
